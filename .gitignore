@@ -1,0 +1,22 @@
+# Environment and secrets
+.env
+.env.*
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Temporary completion and explanation docs
+done
+*done*
+simple-explaination*
+simple_explaination*
+
+# Python cache and testing artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
