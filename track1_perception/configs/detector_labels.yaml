@@ -1,0 +1,12 @@
+# Target obstacle and navigation classes (editable draft)
+classes:
+  0: person
+  1: chair
+  2: table
+  3: door
+  4: staircase_step
+  5: pole
+  6: vehicle
+  7: trash_can
+  8: sign_board
+  9: obstacle_general

@@ -1,0 +1,40 @@
+# Default configuration for Track 1 Perception Pipeline
+# Device selection: auto | cpu | cuda ("auto" picks CUDA if available, else CPU)
+device: auto
+
+# Execution settings
+seed: 42
+target_fps: 10
+
+# Cadence settings (run detection every frame, OCR/scene at lower frequencies)
+cadence:
+  detection_interval_frames: 1
+  scene_interval_frames: 5
+  ocr_interval_frames: 5
+
+# Confidence thresholds
+thresholds:
+  detection_conf: 0.35
+  scene_conf: 0.50
+  ocr_conf: 0.40
+
+# NMS Settings
+nms:
+  iou_threshold: 0.45
+
+# Tracker settings
+tracker:
+  max_age_frames: 15
+  min_hits: 3
+  iou_threshold: 0.30
+  smoothing_window_sec: 0.5
+
+# Model paths (Placeholders for fine-tuned weights)
+models:
+  detector_weights: "models/detector_nano.pt"
+  scene_weights: "models/scene_mobilenet.pt"
+
+# Data paths
+paths:
+  fixtures_dir: "fixtures"
+  results_dir: "results"

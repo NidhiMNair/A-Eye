@@ -1,0 +1,8 @@
+# Scene categories for macro environment classification
+labels:
+  - corridor
+  - staircase
+  - room
+  - outdoor_path
+  - lobby
+  - unknown

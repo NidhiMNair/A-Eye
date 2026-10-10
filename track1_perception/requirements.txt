@@ -1,0 +1,14 @@
+# Core dependencies (Phase 1)
+pydantic>=2.0.0
+numpy>=1.22.0
+opencv-python-headless>=4.5.0
+pyyaml>=6.0
+
+# Dev & testing tools
+pytest>=7.0.0
+pytest-cov>=4.0.0
+black>=23.0.0
+ruff>=0.1.0
+
+# Editable local package install
+-e .

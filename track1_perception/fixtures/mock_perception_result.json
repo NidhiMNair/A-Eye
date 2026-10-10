@@ -1,0 +1,35 @@
+{
+  "frame_id": 1042,
+  "timestamp_ms": 1730000000000,
+  "source": "offline",
+  "objects": [
+    {
+      "label": "chair",
+      "conf": 0.87,
+      "bbox": [0.41, 0.52, 0.63, 0.94],
+      "track_id": 12,
+      "motion": {
+        "dx": 0.05,
+        "dy": -0.01,
+        "growth": 0.02
+      }
+    },
+    {
+      "label": "door",
+      "conf": 0.92,
+      "bbox": [0.1, 0.15, 0.35, 0.85],
+      "track_id": null,
+      "motion": null
+    }
+  ],
+  "text_blocks": [
+    {
+      "text": "Room 204",
+      "conf": 0.91,
+      "bbox": [0.1, 0.2, 0.3, 0.26]
+    }
+  ],
+  "scene_label": "corridor",
+  "scene_description": null,
+  "contract_version": "0.1-draft"
+}

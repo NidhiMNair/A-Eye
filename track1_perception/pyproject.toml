@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aeye-perception"
+version = "0.1.0"
+description = "Track 1 Perception subsystem for A-Eye smartphone navigation assistant"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "A-Eye Track 1 Team" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "pydantic>=2.0.0",
+    "numpy>=1.22.0",
+    "opencv-python-headless>=4.5.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+detection = [
+    "torch>=2.0.0",
+    "ultralytics>=8.0.0",
+]
+scene = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "timm>=0.9.0",
+]
+ocr = [
+    "easyocr>=1.7.0",
+    "jiwer>=3.0.0",
+]
+export = [
+    "onnx>=1.14.0",
+    "onnxruntime>=1.15.0",
+]
+eval = [
+    "jiwer>=3.0.0",
+    "motmetrics>=1.4.0",
+    "scikit-learn>=1.2.0",
+    "matplotlib>=3.7.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I"]
