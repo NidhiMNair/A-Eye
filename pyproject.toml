@@ -1,0 +1,16 @@
+[tool.pytest.ini_options]
+testpaths = ["track2/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+# Integration tests are skipped until real modules are connected.
+# To run only contract and fixture tests:
+#   pytest -m "not integration"
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m not integration')",
+    "unit: marks tests as unit tests",
+    "contract: marks tests as contract validation tests",
+    "fixture: marks tests as fixture tests",
+]
