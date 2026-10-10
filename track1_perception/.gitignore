@@ -23,3 +23,8 @@ results/
 *.mp4
 *.png
 *.jpg
+
+# Raw & split dataset contents (do not commit dataset files/recordings)
+data/*
+!data/README.md
+!data/.gitkeep
