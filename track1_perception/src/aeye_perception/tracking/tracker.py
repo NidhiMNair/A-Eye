@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from aeye_perception.contract import DetectedObject, MotionVector
-from aeye_perception.geometry import compute_center, compute_iou, compute_area
+from aeye_perception.geometry import clamp_bbox, compute_center, compute_iou, compute_area
 
 
 @dataclass
@@ -20,16 +20,23 @@ class _Track:
     center: tuple[float, float]
     area: float
     timestamp_ms: int
+    velocity: tuple[float, float] = (0.0, 0.0)
     missed_frames: int = 0
 
 
 class IoUTracker:
-    """Associate detections between frames using class labels and IoU."""
+    """Associate detections between frames using class labels and IoU.
+
+    Supports optional constant-velocity motion prediction in image space.
+    Note: Motion values represent apparent 2D image-space changes only;
+    they do not represent physical 3D velocity or collision risk.
+    """
 
     def __init__(
         self,
         iou_threshold: float = 0.3,
         max_missed_frames: int = 2,
+        use_motion_prediction: bool = True,
     ) -> None:
         if not 0.0 <= iou_threshold <= 1.0:
             raise ValueError("iou_threshold must be between 0 and 1")
@@ -38,9 +45,23 @@ class IoUTracker:
 
         self.iou_threshold = iou_threshold
         self.max_missed_frames = max_missed_frames
+        self.use_motion_prediction = use_motion_prediction
         self._tracks: Dict[int, _Track] = {}
         self._next_id = 1
         self._last_timestamp_ms: Optional[int] = None
+
+    def _predict_bbox(self, track: _Track, dt: float) -> List[float]:
+        """Estimate future bbox under constant apparent image velocity."""
+        vx, vy = track.velocity
+        dx = vx * dt
+        dy = vy * dt
+        raw = [
+            track.bbox[0] + dx,
+            track.bbox[1] + dy,
+            track.bbox[2] + dx,
+            track.bbox[3] + dy,
+        ]
+        return clamp_bbox(raw)
 
     def update(
         self,
@@ -71,7 +92,20 @@ class IoUTracker:
                 if detection.label != track.label:
                     continue
 
-                overlap = compute_iou(detection.bbox, track.bbox)
+                if (
+                    self.use_motion_prediction
+                    and dt is not None
+                    and track.missed_frames == 0
+                    and track.velocity != (0.0, 0.0)
+                ):
+                    pred_bbox = self._predict_bbox(track, dt)
+                    overlap = max(
+                        compute_iou(detection.bbox, pred_bbox),
+                        compute_iou(detection.bbox, track.bbox),
+                    )
+                else:
+                    overlap = compute_iou(detection.bbox, track.bbox)
+
                 if overlap >= self.iou_threshold:
                     candidates.append((overlap, det_index, track_id))
 
@@ -99,15 +133,19 @@ class IoUTracker:
                 track_id = matches[index]
                 previous = self._tracks[track_id]
                 motion = None
+                velocity = (0.0, 0.0)
 
                 # Do not calculate velocity across a missing-frame gap:
                 # the number/timing of unseen movements is uncertain.
                 if dt is not None and previous.missed_frames == 0:
+                    vx = (center[0] - previous.center[0]) / dt
+                    vy = (center[1] - previous.center[1]) / dt
                     motion = MotionVector(
-                        dx=(center[0] - previous.center[0]) / dt,
-                        dy=(center[1] - previous.center[1]) / dt,
+                        dx=vx,
+                        dy=vy,
                         growth=(area - previous.area) / dt,
                     )
+                    velocity = (vx, vy)
 
                 updated_tracks[track_id] = _Track(
                     track_id=track_id,
@@ -116,6 +154,7 @@ class IoUTracker:
                     center=center,
                     area=area,
                     timestamp_ms=timestamp_ms,
+                    velocity=velocity,
                 )
             else:
                 track_id = self._next_id
@@ -129,6 +168,7 @@ class IoUTracker:
                     center=center,
                     area=area,
                     timestamp_ms=timestamp_ms,
+                    velocity=(0.0, 0.0),
                 )
 
             output.append(
@@ -142,6 +182,7 @@ class IoUTracker:
             if track_id not in matched_tracks:
                 track.missed_frames += 1
                 if track.missed_frames <= self.max_missed_frames:
+                    track.velocity = (0.0, 0.0)
                     updated_tracks[track_id] = track
 
         self._tracks = updated_tracks
