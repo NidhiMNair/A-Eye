@@ -19,6 +19,8 @@ env/
 # Synthetic test data & results output (do not commit large binaries)
 fixtures/synthetic/
 results/
+result.json
+annotated.jpg
 *.avi
 *.mp4
 *.png
@@ -28,3 +30,7 @@ results/
 data/*
 !data/README.md
 !data/.gitkeep
+
+# Model weights & model directories
+models/
+*.pt
