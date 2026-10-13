@@ -87,6 +87,41 @@ pytest
 
 ---
 
+## Video Perception Inference Pipeline
+
+The video pipeline connects the object detector (`YOLOObstacleDetector` or `MockDetector`), the `IoUTracker`, and the shared `PerceptionResult` contract, outputting frame-by-frame perceptions to JSONL format and optionally writing an annotated video.
+
+### Running the Pipeline
+
+**1. Mock Mode (no model weights or GPU required):**
+```powershell
+python scripts/run_video_pipeline.py --video path/to/video.mp4 --mock --output-jsonl results.jsonl --output-video annotated.mp4
+```
+
+**2. YOLO Detector Mode:**
+```powershell
+python scripts/run_video_pipeline.py --video path/to/video.mp4 --weights models/yolov8n.pt --output-jsonl results.jsonl --output-video annotated.mp4
+```
+
+**Options:**
+- `--video <path>`: Input video file (required).
+- `--mock`: Use deterministic `MockDetector` for testing and synthetic verification without downloading weights.
+- `--weights <path>`: YOLO weights checkpoint (default: `yolov8n.pt`).
+- `--conf <float>`: Confidence threshold override (e.g., `0.40`).
+- `--iou <float>`: Detector NMS IoU threshold override (e.g., `0.50`).
+- `--output-jsonl <path>`: Save frame-by-frame `PerceptionResult` records as JSONL (one JSON object per line).
+- `--output-video <path>`: Save MP4 video with rendered bounding boxes, class labels, and persistent track IDs.
+- `--max-frames <int>`: Limit processing to the first N frames.
+
+### Outputs & Timestamp Behavior
+- **JSONL Output**: Each line is a valid, deserializable `PerceptionResult` record adhering to `CONTRACT_VERSION = "0.1-draft"`:
+  - Monotonically increasing `frame_id` (0, 1, 2, ...).
+  - `source="offline"`, empty `text_blocks=[]`, and `scene_description=None`.
+  - Persistent `track_id` and apparent 2D motion vectors (`dx`, `dy`, `growth`).
+- **Timestamp Handling**: Video container timestamps (`CAP_PROP_POS_MSEC`) are used when strictly increasing. If video metadata contains zero, duplicate, or backwards timestamps, the pipeline advances each frame timestamp by at least $\Delta t = \text{round}(1000 / \text{fps})$ ms, ensuring strictly increasing timestamps ($t_k > t_{k-1}$) for tracking stability.
+
+---
+
 ## Proposed Root README Pointer
 
 To link Track 1 from the main repository `README.md`, append the following line to the root `README.md`:
