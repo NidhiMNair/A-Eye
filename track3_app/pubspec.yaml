@@ -35,10 +35,11 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   http: ^1.6.0
-  image_picker: ^1.2.4
+  camera: ^0.12.1
   flutter_tts: ^4.2.5
-
-  camera: ^0.11.1+2
+  vibration: ^3.2.1
+  image: ^4.12.0
+  uuid: ^4.6.0
 
 dev_dependencies:
   flutter_test:
