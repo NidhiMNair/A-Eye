@@ -1,0 +1,262 @@
+# A-Eye: Track 3 — Assistive Mobile Client (Flutter)
+# Context, Architecture, and Inter-File Interaction Guide
+
+================================================================================
+1. SCOPE & PURPOSE OF TRACK 3
+================================================================================
+Track 3 is the user-facing mobile client application built with Flutter (primary
+target Android, architecturally compatible with iOS). It serves as the real-time,
+hands-free sensory interface for visually impaired users.
+
+CORE RESPONSIBILITIES:
+  - Voice-First & Tactile Interaction:
+      Once started, the user does not need to look at or tap the screen. The app
+      continuously and autonomously verbalizes scene obstacles, directional cues,
+      and environmental changes, reinforced by distinct vibration patterns.
+  - Non-Saturating Camera Frame Scheduling:
+      Samples camera frames at a controlled interval (default: 750 ms) using a
+      zero-pileup architecture. If backend inference is currently in progress,
+      new timer ticks drop stale frames rather than queueing them up, guaranteeing
+      zero latency accumulation.
+  - Bridge API Communication:
+      Uploads captured JPEG frames as multipart HTTP requests to `track2_bridge`
+      (`/process-frames`), receiving strongly typed `Track2Result` JSON payloads.
+  - Intelligent Output Policy & Deduplication:
+      Prevents spamming the user with repetitive speech (e.g. "chair, chair, chair")
+      via cooldown windows, while guaranteeing that urgent `HIGH` / `ALERT` hazards
+      immediately interrupt lower-priority speech.
+  - High-Contrast Accessibility UI:
+      Built for low-vision accessibility with dark high-contrast colors, massive
+      touch targets (`BigActionButton`), clear status banners, and screen reader
+      semantics.
+
+WHAT TRACK 3 DOES NOT DO:
+  - No scene perception or deep computer vision modeling on device (delegated to Track 2).
+  - No 2D spatial coordinate calculations or hazard classifications (Track 2 is source of truth).
+  - Never overrides Track 2's hazard determinations or fabricates safety declarations.
+
+
+================================================================================
+2. SYSTEM ARCHITECTURE & DATA FLOW
+================================================================================
+
+  ┌────────────────────────┐
+  │  Device Camera Sensor  │
+  └───────────┬────────────┘
+              │  Raw frames captured via CameraService
+              ▼
+  ┌────────────────────────┐
+  │     FrameScheduler     │  Ticks every 500-1000ms; drops frame if inference is in flight
+  └───────────┬────────────┘
+              │  JPEG bytes sent via HTTP POST /process-frames
+              ▼
+  ┌────────────────────────┐
+  │   Track2ApiService     │  HTTP client communicating with track2_bridge
+  └───────────┬────────────┘
+              │  Receives Track2Result JSON and parses into Dart domain models
+              ▼
+  ┌────────────────────────┐
+  │ AssistanceOutputPolicy │  Deduplication check, cooldown timers, urgency preemption
+  └───────┬────────┬───────┘
+          │        │
+     (If spoken)   (If haptics enabled)
+          ▼        ▼
+  ┌──────────────┐ ┌───────────────┐
+  │SpeechService │ │ HapticService │
+  │(flutter_tts) │ │  (Vibration)  │
+  └──────────────┘ └───────────────┘
+          │
+          ▼
+  SessionState updated -> UI reflects new state via reactive ValueNotifiers
+
+
+================================================================================
+3. COMPLETE DIRECTORY FILE BREAKDOWN
+================================================================================
+
+--------------------------------------------------------------------------------
+track3_app/lib/main.dart
+--------------------------------------------------------------------------------
+Application entry point.
+Initializes Flutter bindings and launches the root widget `AEyeApp`.
+
+--------------------------------------------------------------------------------
+track3_app/lib/app.dart
+--------------------------------------------------------------------------------
+Root application widget:
+  - Configures `MaterialApp` with high-contrast accessibility theme (deep dark
+    background `#0F172A`, bright amber accent `#F59E0B`, crisp white text).
+  - Defines routes:
+      * `/`: `AssistanceScreen` (primary user screen)
+      * `/settings`: `SettingsScreen` (configuration screen)
+
+--------------------------------------------------------------------------------
+track3_app/lib/config/app_config.dart
+--------------------------------------------------------------------------------
+Global configuration state:
+  - `bridgeBaseUrl`: Address of `track2_bridge` (`http://10.0.2.2:5000` for Android
+    emulator, or local LAN IP like `http://192.168.1.X:5000` for physical devices).
+  - `frameIntervalMs`: Frame capture frequency (default 750 ms, range 500–1500 ms).
+  - `speechCooldownMs`: Cooldown before repeating identical messages (default 3000 ms).
+  - `speechRate`, `speechPitch`, `speechLanguage`: TTS tuning (default `en-IN` / `en-US`).
+  - `enableHaptics`: Toggle for vibration feedback (default: true).
+  - `showDebugOverlay`: Toggle for bounding box drawing over camera feed.
+
+--------------------------------------------------------------------------------
+track3_app/lib/models/ (Data Contracts matching Track 2)
+--------------------------------------------------------------------------------
+  - `assistance_category.dart`: Enum `alert`, `guidance`, `info`, `none`.
+  - `priority_level.dart`: Enum `high`, `medium`, `low`, `none`.
+  - `bounding_box.dart`: Normalized bounding box (`ymin`, `xmin`, `ymax`, `xmax`)
+    with JSON deserialization and coordinate helpers.
+  - `detected_object.dart`: Parsed object (`label`, `confidence`, `box`, `isHazard`).
+  - `perception_result.dart`: Scene description, detected objects, hazards, uncertainties.
+  - `spatial_analysis.dart`: Horizontal/vertical zones, central objects, prominent object,
+    and relative positions.
+  - `context_analysis.dart`: Persistent objects, new objects, repeated hazards, scene delta.
+  - `prioritized_item.dart`: Single prioritized obstacle or landmark.
+  - `assistance_decision.dart`: Top-level decision (`category`, `priority`, `message`, items).
+  - `track2_result.dart`: Root model parsing the complete JSON response from `track2_bridge`.
+  - `models.dart`: Barrel export file re-exporting all models.
+
+--------------------------------------------------------------------------------
+track3_app/lib/camera/camera_service.dart
+--------------------------------------------------------------------------------
+Hardware camera manager:
+  - Enumerates available cameras and selects the back-facing sensor.
+  - Initializes `CameraController` at medium resolution (optimized for fast inference
+    transfer without crushing bandwidth).
+  - `captureFrame()`: Captures an upright JPEG snapshot and reads raw bytes in memory.
+  - Manages safe resource initialization and disposal.
+
+--------------------------------------------------------------------------------
+track3_app/lib/services/
+--------------------------------------------------------------------------------
+  - `track2_api_service.dart`:
+      HTTP client communicating with `track2_bridge`.
+      * `checkHealth()`: Verifies bridge status and active VLM mode.
+      * `resetSession()`: Calls POST `/session/reset` to clear Track 2 context.
+      * `processFrame(bytes, frameId, timestampMs)`: Sends multipart image payload
+        to POST `/process-frames` and returns deserialized `Track2Result`.
+      * Error Handling: Categorizes errors into `Track2NetworkException`,
+        `Track2VlmException`, and `Track2ApiException`.
+  - `frame_scheduler.dart`:
+      Non-saturating periodic scheduler:
+      * Runs periodic ticks using `Timer.periodic`.
+      * Zero-pileup guard: if `_isInferenceInFlight` is true when the timer fires,
+        the tick drops the frame immediately and logs the drop, preventing buffer backlog.
+      * Tracks metrics: `processedCount` and `droppedCount`.
+  - `speech_service.dart`:
+      TTS audio output manager using `flutter_tts`:
+      * `speak(message, {interrupt = false})`: Speaks guidance or alerts.
+      * Preemption: If `interrupt` is true, immediately cancels current speech and
+        speaks the urgent message without delay.
+      * Exposes `stop()` to halt speech instantly.
+  - `haptic_service.dart`:
+      Tactile vibration feedback engine using `vibration` plugin:
+      * ALERT: Urgent double-pulse (200ms pulse, 100ms pause, 200ms pulse).
+      * GUIDANCE: Single crisp pulse (150ms).
+      * INFO: Subtle short tap (50ms).
+      * NONE: No vibration.
+  - `session_service.dart`:
+      Central orchestrator coordinating all sub-services:
+      * Manages session lifecycle (`idle` -> `initializing` -> `cameraReady` -> `active`).
+      * Calls `apiService.resetSession()` on session start.
+      * Feeds captured frames to API service, passes results to `AssistanceOutputPolicy`,
+        triggers speech and haptics, and updates `SessionState`.
+
+--------------------------------------------------------------------------------
+track3_app/lib/output/assistance_output_policy.dart
+--------------------------------------------------------------------------------
+Anti-spam and speech arbitration policy:
+  - Deduplication: Tracks `_lastSpokenMessage` and timestamp.
+  - Cooldown: Suppresses repetitive guidance if within cooldown window (e.g. 3000 ms).
+  - Urgent Preemption: Bypasses cooldown and preempts speech if decision priority is `HIGH`
+    or category is `ALERT`.
+  - Safety Filter: Sanitizes spoken output to ensure no false safety claims are made.
+
+--------------------------------------------------------------------------------
+track3_app/lib/state/session_state.dart
+--------------------------------------------------------------------------------
+Immutable data model reflecting real-time app state:
+  - `status`: Enum (`idle`, `initializing`, `cameraReady`, `active`, `paused`, `error`).
+  - `lastResult`: Most recent `Track2Result`.
+  - `lastSpokenMessage`: Most recent speech string.
+  - `frameCount`: Number of successfully processed frames.
+  - `droppedCount`: Number of dropped frames during inference delays.
+  - `errorMessage`: Active error description if status is `error`.
+
+--------------------------------------------------------------------------------
+track3_app/lib/widgets/
+--------------------------------------------------------------------------------
+  - `big_action_button.dart`:
+      Full-width, large touch target (height >= 80px) designed for visually impaired users.
+      Provides distinct high-contrast colors and haptic response on press.
+  - `camera_preview_widget.dart`:
+      Live viewfinder display with high-contrast accessibility frame and optional
+      bounding box overlays for sighted testing/debugging.
+  - `status_banner.dart`:
+      High-contrast status indicator (IDLE in gray, ACTIVE in green, ALERT in amber/red).
+  - `transcript_card.dart`:
+      Display card showing the latest verbalized assistance message, category chip,
+      and priority level in bold, high-contrast typography.
+
+--------------------------------------------------------------------------------
+track3_app/lib/screens/
+--------------------------------------------------------------------------------
+  - `assistance_screen.dart`:
+      The primary screen of the application. Integrates `CameraPreviewWidget`,
+      `StatusBanner`, `TranscriptCard`, and `BigActionButton`. Fully navigable with
+      Android TalkBack.
+  - `settings_screen.dart`:
+      Accessible configuration screen to adjust the bridge IP address, port, frame rate,
+      speech settings, and toggle haptics.
+
+--------------------------------------------------------------------------------
+track3_app/test/
+--------------------------------------------------------------------------------
+Comprehensive Flutter unit and widget test suite:
+  - `api_service_test.dart`: Validates HTTP client error handling (400, 502, network failure).
+  - `config_test.dart`: Tests configuration defaults and serialization.
+  - `frame_scheduler_test.dart`: Validates non-saturating frame drops and unique frame IDs.
+  - `models_test.dart`: Validates JSON deserialization across all Track 2 data models.
+  - `output_policy_test.dart`: Tests deduplication, cooldowns, urgency preemption, and haptics.
+  - `session_service_test.dart`: Tests full session state machine lifecycle transitions.
+
+
+================================================================================
+4. INTER-FILE INTERACTION & DEPENDENCY GRAPH
+================================================================================
+
+Internal Component Flow:
+  1. `main.dart` initializes `AEyeApp` (`app.dart`).
+  2. `app.dart` displays `AssistanceScreen` (`assistance_screen.dart`).
+  3. `AssistanceScreen` owns or binds to `SessionService` (`session_service.dart`).
+  4. When user taps `BigActionButton`:
+      - `SessionService.startSession()` is called.
+      - `SessionService` initializes `CameraService` and tests `Track2ApiService.checkHealth()`.
+      - `SessionService` calls `Track2ApiService.resetSession()`.
+      - `SessionService` starts `FrameScheduler`.
+  5. On each timer tick:
+      - `FrameScheduler` invokes capture callback.
+      - `CameraService.captureFrame()` returns JPEG bytes.
+      - `Track2ApiService.processFrame()` uploads bytes to `track2_bridge`.
+      - Bridge returns `Track2Result`.
+      - `SessionService` queries `AssistanceOutputPolicy.shouldSpeak(result)`.
+      - If true: `SpeechService.speak()` and `HapticService.trigger()`.
+      - `SessionService` updates `SessionState` notifying `AssistanceScreen` widgets.
+
+
+================================================================================
+5. HOW OTHER AI AGENTS SHOULD USE THIS FOLDER
+================================================================================
+- To run all automated tests:
+    `flutter test`
+- To run on Android emulator or device:
+    `flutter run`
+- Android Emulator Networking:
+    When running in the standard Android emulator, use `http://10.0.2.2:5000` to reach
+    the host PC running `track2_bridge`.
+- Physical Device Networking:
+    Connect the phone to the same Wi-Fi network as the PC and configure the PC's LAN IP
+    (e.g., `http://192.168.1.100:5000`) in the app's Settings screen.
