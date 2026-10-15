@@ -1,0 +1,258 @@
+# A-Eye: Track 2 — Scene Perception & Spatial Reasoning Engine
+# Context, Architecture, and Inter-File Interaction Guide
+
+================================================================================
+1. SCOPE & PURPOSE OF TRACK 2
+================================================================================
+Track 2 is the core perception, spatial reasoning, temporal context, and assistance
+decision engine for the A-Eye Assistive Vision System.
+
+UPSTREAM (Caller / Track 1 or Bridge):
+  - Ingests raw camera frames packaged as a chronological `FrameBatch`.
+
+CORE PROCESSING:
+  - VLM Perception: Runs frames through an abstract Vision-Language Model interface
+    (either offline deterministic `MockVLM` or live `GeminiVLM`).
+  - Spatial Geometry: Pure 2D image-coordinate spatial analysis (horizontal &
+    vertical zones, prominence, central view detection, relative object layout).
+  - Temporal Context: Sliding-window history tracking object persistence, newly
+    discovered items, repeated hazards, and scene change deltas.
+  - Assistance Decision: Arbitrates priority levels (HIGH, MEDIUM, LOW, NONE) and
+    action categories (ALERT, GUIDANCE, INFO, NONE), generating structured items
+    and assistive speech suggestions.
+
+DOWNSTREAM (Track 3 / Bridge Client):
+  - Emits a strictly validated, strongly typed Pydantic object: `Track2Result`.
+  - Contains full perception labels, bounding boxes, spatial coordinates,
+    temporal persistence data, decision categories, and a summary.
+
+WHAT TRACK 2 DOES NOT DO (CRITICAL BOUNDARIES):
+  - No camera hardware control or frame capture (belongs to Track 1 / Track 3 client).
+  - No Text-to-Speech (TTS) synthesis or audio playback (belongs to Track 3).
+  - No user interface, screen rendering, or gesture handling (belongs to Track 3).
+  - No 3D depth or metric distance guessing (operates strictly on 2D [0.0, 1.0] coordinates).
+  - NEVER declares a scene or path "safe to walk" (strict safety liability principle).
+
+
+================================================================================
+2. PIPELINE ARCHITECTURE & DATA FLOW
+================================================================================
+The Track 2 pipeline is linear, modular, and deterministic:
+
+  FrameBatch (1 or more chronological camera frames)
+       │
+       ▼
+  [VisionLanguageModel] (vlm.py: MockVLM or GeminiVLM)
+       │  Emits PerceptionResult (description, detected objects, hazards)
+       ▼
+  [SpatialReasoner] (spatial.py)
+       │  Computes zones (LEFT/CENTER/RIGHT, UPPER/MID/LOWER), prominence, relative layout
+       ▼
+  [ContextReasoner] (context.py)
+       │  Maintains sliding history deque; tracks persistence, new objects, scene deltas
+       ▼
+  [AssistanceDecisionEngine] (decision.py)
+       │  Evaluates risk, assigns ALERT/GUIDANCE/INFO/NONE and HIGH/MED/LOW priority
+       ▼
+  Track2Result (models.py)
+       │  Complete serializable payload returned to caller / bridge
+
+
+================================================================================
+3. COMPLETE DIRECTORY FILE BREAKDOWN
+================================================================================
+
+--------------------------------------------------------------------------------
+track2/models.py
+--------------------------------------------------------------------------------
+Defines all strongly typed Pydantic v2 data models for the Track 2 domain:
+  - `Frame`: Immutable camera frame with `frame_id: str`, `timestamp: int`, and
+    `data: bytes`. Validates non-empty IDs, positive timestamps, and non-empty bytes.
+    Provides `to_base64()` and `size_bytes` properties.
+  - `FrameBatch`: Sequence of `Frame` objects. Guarantees chronological ordering
+    and non-empty batch length. Provides `first`, `latest`, and `ids` properties.
+  - `BoundingBox`: Normalized 2D box (`ymin`, `xmin`, `ymax`, `xmax`) in [0.0, 1.0].
+    Validates range, ordering ($ymin < ymax$, $xmin < xmax$), and computes `width`,
+    `height`, `area`, `center_x`, and `center_y`.
+  - `DetectedObject`: Detected item with `label: str`, `confidence: float`,
+    `box: BoundingBox`, and `is_hazard: bool`.
+  - `PerceptionResult`: Direct VLM output containing `scene_label`, `description`,
+    `objects: list[DetectedObject]`, `detected_hazards: list[str]`, and `uncertainties`.
+  - `HorizontalZone`: Enum (`LEFT`, `CENTER`, `RIGHT`).
+  - `VerticalZone`: Enum (`UPPER`, `MIDDLE`, `LOWER`).
+  - `SpatialAnalysis`: Spatial layout output containing `central_objects`,
+    `left_objects`, `right_objects`, `horizontal_zones`, `vertical_zones`,
+    `central_view_detected`, `most_prominent_object`, and `relative_positions`.
+  - `ContextAnalysis`: Temporal history output containing `persistent_objects`,
+    `new_objects`, `scene_change_detected`, `repeated_hazards`,
+    `central_persistence`, and `scene_delta_description`.
+  - `PriorityLevel`: Enum (`HIGH`, `MEDIUM`, `LOW`, `NONE`).
+  - `AssistanceCategory`: Enum (`ALERT`, `GUIDANCE`, `INFO`, `NONE`).
+  - `PrioritizedItem`: Item summary with `label`, `priority`, `reason`, and `zone`.
+  - `AssistanceDecision`: Final decision containing `category`, `priority`,
+    `message`, and `relevant_items: list[PrioritizedItem]`.
+  - `Track2Result`: Top-level contract holding `frame_id`, `timestamp_ms`,
+    `decision`, `perception`, `spatial`, `context`, and `summary`.
+
+--------------------------------------------------------------------------------
+track2/vlm.py
+--------------------------------------------------------------------------------
+Handles Vision-Language Model interactions:
+  - `VisionLanguageModel` (ABC): Abstract base interface requiring `process(FrameBatch)`.
+  - `MockVLM`: 100% offline, deterministic fixture implementation. Supports
+    configurable mock responses for unit testing and CI without API keys.
+  - `GeminiVLM`: Live integration using the official `google-genai` SDK.
+    Configured with model `gemini-3.8-flash` or `gemini-2.5-flash`, structured JSON
+    schema output enforcement, prompt templating, and error handling.
+  - Exceptions: `VLMError` (base), `GeminiAPIKeyError` (missing/invalid key),
+    and `GeminiVLMError` (API call/parsing failures).
+
+--------------------------------------------------------------------------------
+track2/spatial.py
+--------------------------------------------------------------------------------
+Implements `SpatialReasoner` for pure, deterministic 2D geometric reasoning:
+  - Horizontal Zones: [0.0, 0.35) -> LEFT; [0.35, 0.65] -> CENTER; (0.65, 1.0] -> RIGHT.
+  - Vertical Zones: [0.0, 0.35) -> UPPER; [0.35, 0.65] -> MIDDLE; (0.65, 1.0] -> LOWER.
+  - Central View: Detects objects intersecting the central navigation corridor.
+  - Prominence: Computes bounding box area relative to image ($[0.0, 1.0]$) to find
+    the most prominent visual entity.
+  - Relative Layout: Compares object center coordinates to produce directional
+    relationships (e.g., "chair left of table", "lamp above desk").
+  - Overlap Detection: Calculates 2D IoU / bounding box intersections.
+
+--------------------------------------------------------------------------------
+track2/context.py
+--------------------------------------------------------------------------------
+NOTE ON IMPORTANCE: This file is an ESSENTIAL CORE MODULE of the pipeline.
+Implements `ContextReasoner` for sliding-window multi-frame temporal reasoning:
+  - Maintains an internal `collections.deque(maxlen=5)` of past observations.
+  - Persistence Tracking: Compares current object labels against past frames to identify
+    `persistent_objects` vs `new_objects`.
+  - Repeated Hazards: Detects when hazards persist across multiple frames.
+  - Central Persistence: Flags when obstacles remain squarely in the user's forward view.
+  - Scene Delta: Generates natural language delta summaries (e.g., "Chair persisted in center;
+    new table appeared on right").
+  - Context Reset: Provides `reset()` to flush state between user sessions.
+
+--------------------------------------------------------------------------------
+track2/decision.py
+--------------------------------------------------------------------------------
+Implements `AssistanceDecisionEngine` for risk evaluation and category assignment:
+  - Arbitrates `category`:
+      * `ALERT`: Urgent hazards or obstacles directly in the central path.
+      * `GUIDANCE`: Directional landmarks, navigation markers, or side objects.
+      * `INFO`: General scene descriptions or ambient environment context.
+      * `NONE`: Clear path / no noteworthy items.
+  - Assigns `priority`: `HIGH`, `MEDIUM`, `LOW`, or `NONE`.
+  - Synthesizes user-facing concise message for downstream Track 3 speech.
+  - Enforces safety boundaries: never claims a path is "safe".
+
+--------------------------------------------------------------------------------
+track2/pipeline.py
+--------------------------------------------------------------------------------
+Master orchestrator class `Track2Pipeline`:
+  - Wires together `VisionLanguageModel`, `SpatialReasoner`, `ContextReasoner`,
+    and `AssistanceDecisionEngine`.
+  - Exposes `process(FrameBatch) -> Track2Result`.
+  - Exposes `reset_context() -> None` to reset temporal memory.
+  - Ensures robust propagation of errors and handles chronological batch metadata.
+
+--------------------------------------------------------------------------------
+track2/config.py
+--------------------------------------------------------------------------------
+Loads configuration settings from `.env` or system environment:
+  - `get_gemini_api_key()`: Retrieves `GEMINI_API_KEY`.
+  - `get_gemini_model()`: Retrieves `GEMINI_MODEL` (default: `gemini-3.8-flash`).
+
+--------------------------------------------------------------------------------
+track2/__init__.py
+--------------------------------------------------------------------------------
+Defines public package exports for `track2`, allowing clean imports:
+  `from track2 import Track2Pipeline, MockVLM, GeminiVLM, Frame, FrameBatch, Track2Result`
+
+--------------------------------------------------------------------------------
+track2/requirements.txt
+--------------------------------------------------------------------------------
+Defines Python dependencies:
+  - `pydantic>=2.0.0` (data validation)
+  - `google-genai>=0.1.1` (Gemini API client)
+  - `python-dotenv>=1.0.0` (environment variable loading)
+  - `pytest>=7.0.0` (testing framework)
+
+--------------------------------------------------------------------------------
+track2/tests/
+--------------------------------------------------------------------------------
+Comprehensive test suite (43 total tests, 100% offline passing):
+  - `test_vlm.py`: Unit tests for Frame, FrameBatch, MockVLM determinism, GeminiVLM
+    parameter validation and mocked error handling.
+  - `test_reasoning.py`: Unit tests for SpatialReasoner, ContextReasoner, and
+    AssistanceDecisionEngine.
+  - `test_pipeline.py`: End-to-end integration tests of Track2Pipeline with MockVLM,
+    batch processing, context resets, and error propagation.
+  - `test_gemini_integration.py`: Live integration test with Gemini API (skipped when
+    GEMINI_API_KEY is not set).
+  - `test_functional_scenarios.py`: 16 comprehensive functional scenario tests:
+      * Scenarios A-H (empty scene, central obstacle, left/right objects, multiple items,
+        hazards, multi-frame persistence, scene delta changes).
+      * Edge cases (empty batch, invalid coordinates, crowded 20-object scene, multiple
+        hazards, low-confidence uncertainty, VLM failure, Track 3 contract validation).
+
+--------------------------------------------------------------------------------
+track2/ (Non-Code / Documentation & Artifact Files)
+--------------------------------------------------------------------------------
+  - `context` (without extension): Earlier markdown documentation file. Can be kept
+    as reference or replaced by this `context.txt`.
+  - `final_report` (without extension): Execution report from the offline functional
+    test verification run.
+  - `simple_explaination.md`: High-level plain English architectural explanation.
+  - `.env`: Local environment file with API key configuration.
+  - `.gitignore`: Git ignore file for Python artifacts and caches.
+
+
+================================================================================
+4. INTER-FILE INTERACTION & DEPENDENCY GRAPH
+================================================================================
+
+Dependency Hierarchy:
+  1. Base Models & Utilities:
+     models.py (no internal dependencies, depends on pydantic)
+     config.py (depends on python-dotenv)
+
+  2. Processing Engines:
+     vlm.py        ---> imports from models.py, config.py
+     spatial.py    ---> imports from models.py
+     context.py    ---> imports from models.py
+     decision.py   ---> imports from models.py
+
+  3. Pipeline Integration:
+     pipeline.py   ---> imports from models.py, vlm.py, spatial.py, context.py, decision.py
+
+  4. Public API:
+     __init__.py   ---> re-exports from models, vlm, spatial, context, decision, pipeline
+
+Execution Call Flow inside `pipeline.py`:
+  1. Caller invokes: `result = pipeline.process(frame_batch)`
+  2. `pipeline.py` calls `vlm.process(frame_batch)` -> returns `PerceptionResult`
+  3. `pipeline.py` calls `spatial.analyze(perception)` -> returns `SpatialAnalysis`
+  4. `pipeline.py` calls `context.analyze(spatial, perception, frame_batch)` -> returns `ContextAnalysis`
+  5. `pipeline.py` calls `decision.decide(perception, spatial, context)` -> returns `AssistanceDecision`
+  6. `pipeline.py` packages everything into `Track2Result` and returns to caller.
+
+
+================================================================================
+5. HOW OTHER AI AGENTS SHOULD USE THIS FOLDER
+================================================================================
+- To run tests offline:
+    `pytest track2/tests`
+- To run the pipeline in code:
+    ```python
+    from track2 import Track2Pipeline, MockVLM, Frame, FrameBatch
+    pipeline = Track2Pipeline(vlm=MockVLM())
+    frame = Frame(frame_id="f1", timestamp=1000, data=b"...")
+    result = pipeline.process(FrameBatch([frame]))
+    print(result.decision.category, result.decision.message)
+    ```
+- When adding new features:
+  * Do NOT delete `context.py` - it implements multi-frame context reasoning.
+  * Preserve the `Track2Result` contract so downstream bridge and mobile apps do not break.
+  * Always ensure tests pass offline with `pytest`.
