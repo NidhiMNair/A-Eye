@@ -1,0 +1,62 @@
+# Track 3 — A-Eye Mobile Application: Improvements Required
+
+Focus only on **Track 3 (`track3_app`)** and its integration with the existing `track2` and `track2-bridge` folders. Do not rewrite Track 2's perception or reasoning logic.
+
+### 1. Camera Feed and Frame Processing
+- The current camera preview does not capture the surroundings as effectively as required.
+- Improve the preview's framing and usable vertical coverage while maintaining the correct aspect ratio. Avoid stretching the image.
+- Review camera resolution, orientation, cropping, and frame resizing before sending images to Track 2.
+- Ensure sampled frames retain enough visual detail for useful scene understanding.
+- Keep the existing scheduled processing approach, with no overlapping inference requests or unbounded frame queues.
+
+### 2. Speech Quality and Relevance
+- The current TTS repeatedly announces low-value information and is not natural enough.
+- Replace the existing speech output with a more natural, expressive neural TTS solution suitable for an assistive application.
+- Investigate options such as cloud neural TTS or a locally hosted neural speech model. Compare latency, cost, internet requirements, voice quality, and deployment complexity before choosing.
+- Keep speech generation separate from Track 2's visual reasoning. A TTS model generates speech; it should not independently invent scene descriptions or replace Track 2's decisions.
+- Automatically speak concise, actionable guidance rather than raw perception details or repeated object lists.
+
+### 3. Intelligent Speech Policy
+- Add a dedicated output policy that filters Track 2 results before speaking.
+- Prioritize urgent alerts over ordinary guidance and informational updates.
+- Suppress duplicate messages and repeated observations of unchanged surroundings.
+- Add configurable cooldowns, meaningful-change detection, and interruption of lower-priority speech when an urgent alert arrives.
+- Keep `NONE` results silent and avoid narrating continuously when nothing important changes.
+- Do not invent navigation instructions or claim a route is safe.
+
+### 4. Voice-Assisted Controls
+- Add voice commands to start and stop assistance, with clear spoken confirmations.
+- Consider commands such as “Start assistance” and “Stop assistance.”
+- Use an appropriate on-device speech recognition solution where possible.
+- Request microphone permission only if required, and handle recognition errors and unavailable services gracefully.
+- Ensure voice commands do not accidentally interrupt critical assistance or cause repeated start/stop transitions.
+
+### 5. Track 2 Integration and VLM Configuration
+- Continue using `track2-bridge` as the communication boundary between Flutter and Track 2.
+- Verify that the bridge receives scheduled frames, preserves timestamps, and returns structured Track 2 results.
+- The immediate development target is to connect the existing Track 2 pipeline to Gemini using the supported Gemini integration and API configuration.
+- Keep mock mode available for offline development and automated testing.
+- Design Track 3 so the backend/VLM provider can later change from Gemini to Qwen or a remotely hosted inference service without rewriting the camera, speech, or UI layers.
+- Do not implement a second vision model or duplicate Track 2 reasoning in Flutter.
+
+### 6. Latency, Reliability, and Session Management
+- Measure camera-to-result latency, speech-generation latency, dropped frames, and backend availability.
+- Prevent repeated network errors from being spoken continuously.
+- Add controlled retries, clear connection status, and configurable backend URLs.
+- Ensure starting and stopping assistance correctly manages the camera, scheduler, network requests, speech engine, and voice recognition.
+- Test on a physical Android device, not only a web preview or emulator.
+
+### 7. Accessible Mobile Interface
+- Keep the interface minimal, mobile-first, and designed for visually impaired users.
+- Retain a large, accessible start/stop control, assistance status, and an optional latest-guidance transcript.
+- Make core functionality voice-first; users should not need to read the screen or press a speech button after each result.
+- Ensure compatibility with Android TalkBack and provide appropriate semantic labels and large touch targets.
+
+### 8. Testing and Deliverables
+- Test camera framing and frame quality on a real device.
+- Test speech deduplication, urgency-based interruption, voice commands, and start/stop lifecycle.
+- Test the complete pipeline using mock mode and the Gemini-backed Track 2 pipeline.
+- Document required installations, API-key configuration, backend setup, TTS setup, permissions, and run commands.
+- Identify any setup steps that must be completed manually, including creating the Gemini API key and configuring credentials.
+
+**Expected result:** A reliable, voice-first A-Eye mobile application that captures useful camera frames, obtains structured decisions from Track 2, and delivers concise, natural, non-repetitive spoken assistance with appropriate haptic feedback.
