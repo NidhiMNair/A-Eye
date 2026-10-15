@@ -1,0 +1,174 @@
+# A-Eye: Track 2 Bridge — Mobile HTTP Integration Gateway
+# Context, Architecture, and Inter-File Interaction Guide
+
+================================================================================
+1. SCOPE & PURPOSE OF TRACK 2 BRIDGE
+================================================================================
+The `track2_bridge` is a high-performance, asynchronous FastAPI HTTP microservice
+that connects mobile client devices (such as the Track 3 Flutter Android app) to
+the local Python Track 2 perception and spatial reasoning pipeline.
+
+CORE RESPONSIBILITIES:
+  - Exposes RESTful HTTP endpoints for camera frame ingestion, session management,
+    and service health status.
+  - Transforms incoming HTTP multipart image payloads (JPEG/PNG) and form metadata
+    into validated Track 2 domain objects (`Frame`, `FrameBatch`).
+  - Executes `Track2Pipeline.process(batch)` and returns the resulting `Track2Result`
+    serialized as clean JSON.
+  - Persists temporal context across consecutive frame inferences during an active
+    session, and flushes memory when requested via `/session/reset`.
+  - Provides dual-mode operation:
+      * MOCK mode (default): 100% offline, deterministic simulation for local
+        testing and rapid development without requiring API keys or internet access.
+      * LIVE mode: Connects to Google Gemini 3.8/2.5 Flash via `GeminiVLM`.
+  - Normalizes and isolates error handling, converting internal pipeline errors into
+    standardized HTTP error responses with machine-readable error codes.
+
+RELATION TO ROOT server.py:
+  - Root `server.py` was an earlier, synchronous Flask prototype.
+  - `track2_bridge` is the official, modernized FastAPI bridge service with full
+    async support, structured OpenAPI documentation, CORS, and dedicated session management.
+
+
+================================================================================
+2. ARCHITECTURE & DATA FLOW
+================================================================================
+
+  Mobile Client (Track 3 Flutter App)
+       │
+       │  POST /process-frames (multipart/form-data: image file, metadata)
+       ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │                 track2_bridge/server.py                 │
+  │                                                         │
+  │  1. Receives UploadFile & reads image bytes             │
+  │  2. Assembles Frame(frame_id, timestamp, data)          │
+  │  3. Packages into FrameBatch([frame])                   │
+  │  4. Calls module-level Track2Pipeline instance          │
+  └────────────────────────────┬────────────────────────────┘
+                               │
+                               ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │                    track2/pipeline.py                   │
+  │                                                         │
+  │  VLM -> SpatialReasoner -> ContextReasoner -> Decision │
+  └────────────────────────────┬────────────────────────────┘
+                               │
+                               ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │                 track2_bridge/server.py                 │
+  │                                                         │
+  │  5. Serializes result.model_dump(mode="json")           │
+  │  6. Returns JSON HTTP 200 to Mobile Client              │
+  └─────────────────────────────────────────────────────────┘
+
+
+================================================================================
+3. COMPLETE DIRECTORY FILE BREAKDOWN
+================================================================================
+
+--------------------------------------------------------------------------------
+track2_bridge/config.py
+--------------------------------------------------------------------------------
+Configuration loader for the bridge service:
+  - Discovers `.env` files automatically from root, `track2/.env`, or current working dir.
+  - `get_vlm_mode() -> "mock" | "live"`:
+      Reads `A_EYE_VLM_MODE`. Defaults to `"mock"` for safe, zero-cost offline development.
+  - `get_bridge_host() -> str`:
+      Reads `A_EYE_BRIDGE_HOST` (defaults to `"0.0.0.0"`).
+  - `get_bridge_port() -> int`:
+      Reads `A_EYE_BRIDGE_PORT` (defaults to `5000`).
+
+--------------------------------------------------------------------------------
+track2_bridge/server.py
+--------------------------------------------------------------------------------
+The primary FastAPI application exposing the Track 2 bridge API:
+  - Pipeline Factory & Singleton:
+      `create_pipeline(mode)`: Instantiates `Track2Pipeline` with `MockVLM` or `GeminiVLM`.
+      Maintains a module-level `pipeline` instance so `ContextReasoner` preserves
+      temporal context (persistent objects, scene changes) across incoming requests.
+  - CORS Middleware:
+      Permits all origins (`*`) to allow local development from physical phones,
+      emulators (`10.0.2.2`), and web tools.
+  - Global Exception Handler:
+      Catches unexpected exceptions and formats uniform 500 JSON payloads:
+      `{"error_code": "INTERNAL_SERVER_ERROR", "message": "...", "details": "..."}`.
+  - Endpoints:
+      * `GET /health`:
+          Returns `{"status": "healthy", "service": "a-eye-track2-bridge",
+                   "vlm_mode": "mock"|"live", "track2_available": true}`.
+      * `POST /session/reset`:
+          Calls `pipeline.reset_context()` to wipe temporal history when a user starts
+          a new session. Returns `{"status": "success", "message": "..."}`.
+      * `POST /process-frames`:
+          Accepts multipart image uploads (under field `files` or `image`) with optional
+          `frame_id` and `timestamp_ms`. Constructs `FrameBatch`, invokes
+          `pipeline.process(batch)`, and returns `Track2Result` JSON.
+          Emits typed errors:
+            - 400 Bad Request: `NO_FRAMES_PROVIDED`, `EMPTY_IMAGE_DATA`, `INVALID_FRAME_BATCH`
+            - 422 Unprocessable Entity: `FRAME_CONSTRUCTION_ERROR`
+            - 502 Bad Gateway: `VLM_ERROR` (Gemini API outage or parsing failure)
+            - 500 Internal Server Error: `PIPELINE_ERROR`
+
+--------------------------------------------------------------------------------
+track2_bridge/__main__.py
+--------------------------------------------------------------------------------
+CLI launcher module enabling execution via:
+  `python -m track2_bridge`
+Reads host and port configurations and boots the Uvicorn ASGI server.
+
+--------------------------------------------------------------------------------
+track2_bridge/__init__.py
+--------------------------------------------------------------------------------
+Package marker for `track2_bridge`.
+
+--------------------------------------------------------------------------------
+track2_bridge/tests/
+--------------------------------------------------------------------------------
+Automated test suite using `fastapi.testclient.TestClient`:
+  - `test_bridge.py`:
+      * `test_health_endpoint`: Verifies 200 response and correct health keys.
+      * `test_session_reset`: Verifies temporal context reset endpoint.
+      * `test_process_frames_single_frame`: Tests multipart image upload, schema validation,
+        and full Track2Result JSON contract return.
+      * `test_process_frames_multi_frame_batch`: Verifies multi-frame multipart uploads.
+      * `test_process_frames_no_files_returns_400`: Verifies rejection of missing files.
+      * `test_process_frames_empty_file_returns_400`: Verifies rejection of 0-byte images.
+      * `test_live_mode_without_api_key_raises`: Verifies clean error handling when live mode
+        is requested without an API key.
+
+
+================================================================================
+4. INTER-FILE INTERACTION & DEPENDENCY GRAPH
+================================================================================
+
+Internal Bridge Dependencies:
+  - `server.py` imports configuration getters from `config.py`.
+  - `__main__.py` imports host/port from `config.py` and runs `server:app`.
+  - `test_bridge.py` imports `app` and `create_pipeline` from `server.py`.
+
+Cross-Module Dependencies with `track2`:
+  - `server.py` imports:
+      * `track2.config`: `get_gemini_api_key`, `get_gemini_model`
+      * `track2.models`: `Frame`, `FrameBatch`, `Track2Result`
+      * `track2.pipeline`: `Track2Pipeline`
+      * `track2.vlm`: `GeminiVLM`, `MockVLM`, `GeminiAPIKeyError`, `GeminiVLMError`
+
+Interaction with `track3_app`:
+  - `track3_app/lib/services/track2_api_service.dart` sends HTTP requests to:
+      * `GET http://<bridge-ip>:5000/health`
+      * `POST http://<bridge-ip>:5000/session/reset`
+      * `POST http://<bridge-ip>:5000/process-frames`
+
+
+================================================================================
+5. HOW OTHER AI AGENTS SHOULD USE THIS FOLDER
+================================================================================
+- To start the bridge server:
+    `python -m track2_bridge`
+- To run in Live Gemini mode:
+    Set `A_EYE_VLM_MODE=live` and `GEMINI_API_KEY=<your-key>` in `.env`.
+- To run bridge tests:
+    `pytest track2_bridge/tests`
+- To verify the service manually:
+    `curl http://localhost:5000/health`
