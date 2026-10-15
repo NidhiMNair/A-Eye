@@ -1,6 +1,7 @@
 # Environment and secrets
 .env
 .env.*
+.env.example
 
 # Virtual environments
 .venv/
@@ -13,9 +14,8 @@ done
 *done*
 simple-explaination*
 simple_explaination*
-context*
 final_report*
-/track2/tests/
+track2/context
 
 # Python cache and testing artifacts
 __pycache__/
