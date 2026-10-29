@@ -34,3 +34,11 @@ data/*
 # Model weights & model directories
 models/
 *.pt
+
+# Local detector sanity-check experiments (do not commit images/results)
+experiments/detector_sanity/
+
+# Local detector test images
+/bag1.webp
+/bottle3.webp
+/test_image.webp
