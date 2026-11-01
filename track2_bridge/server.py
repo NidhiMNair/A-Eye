@@ -11,7 +11,9 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import time
 from typing import Any, Optional
 from uuid import uuid4
@@ -45,7 +47,8 @@ def create_pipeline(mode: Optional[str] = None) -> tuple[Track2Pipeline, str]:
                 "GEMINI_API_KEY is missing or empty. "
                 "Set GEMINI_API_KEY in track2/.env or environment variables to use live mode."
             )
-        vlm = GeminiVLM(api_key=api_key, model=get_gemini_model())
+        model_name = os.environ.get("A_EYE_BRIDGE_MODEL", os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite"))
+        vlm = GeminiVLM(api_key=api_key, model=model_name)
         logger.info("Track2Pipeline initialized in LIVE mode with model '%s'", vlm.model)
         return Track2Pipeline(vlm=vlm), "live"
     else:
@@ -55,15 +58,26 @@ def create_pipeline(mode: Optional[str] = None) -> tuple[Track2Pipeline, str]:
 
 
 # Initialize pipeline instance once at module level (persists context across session calls)
+fallback_pipeline: Optional[Track2Pipeline] = None
 try:
     pipeline, active_vlm_mode = create_pipeline()
     pipeline_init_error: Optional[str] = None
+    if active_vlm_mode == "live":
+        api_key = get_gemini_api_key()
+        if api_key and api_key.strip():
+            fallback_model = "gemini-3.5-flash" if getattr(pipeline.vlm, "model", "") == "gemini-3.5-flash-lite" else "gemini-3.5-flash-lite"
+            fallback_pipeline = Track2Pipeline(vlm=GeminiVLM(api_key=api_key, model=fallback_model))
+            logger.info("Configured secondary fallback pipeline with '%s'", fallback_model)
 except Exception as e:
     # If live mode fails on startup due to missing key, fallback to mock pipeline or record error
     logger.warning("Pipeline initialization with configured mode failed (%s). Falling back to mock.", e)
     pipeline = Track2Pipeline(vlm=MockVLM())
     active_vlm_mode = "mock"
     pipeline_init_error = str(e)
+
+
+# Pipeline inference lock prevents concurrent overlapping calls on the singleton pipeline
+pipeline_lock = asyncio.Lock()
 
 
 app = FastAPI(
@@ -96,6 +110,7 @@ async def global_exception_handler(_request: Request, exc: Exception) -> JSONRes
     )
 
 
+@app.get("/")
 @app.get("/health")
 async def health_check() -> dict[str, Any]:
     """
@@ -116,6 +131,8 @@ async def reset_session() -> dict[str, Any]:
     Reset Track 2 temporal context history for a fresh user session.
     """
     pipeline.reset_context()
+    if fallback_pipeline is not None:
+        fallback_pipeline.reset_context()
     logger.info("Session context reset requested by Track 3 client.")
     return {
         "status": "success",
@@ -156,6 +173,10 @@ async def process_frames(
             },
         )
 
+    request_id = str(uuid4())[:8]
+    req_start = time.perf_counter()
+    logger.info("[%s] Ingesting %d frame(s) for processing", request_id, len(resolved_uploads))
+
     frames: list[Frame] = []
     current_time_ms = int(time.time() * 1000)
 
@@ -180,7 +201,7 @@ async def process_frames(
         try:
             frames.append(Frame(frame_id=f_id, timestamp=t_ms, data=content))
         except Exception as err:
-            logger.error("Failed to construct Frame object: %s", err)
+            logger.error("[%s] Failed to construct Frame object: %s", request_id, err)
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
@@ -200,20 +221,42 @@ async def process_frames(
             },
         ) from err
 
-    # Process through Track 2 pipeline
+    prep_ms = round((time.perf_counter() - req_start) * 1000, 2)
+
+    # Process through Track 2 pipeline under lock (serializes VLM calls and protects context reasoner)
     try:
-        start_time = time.perf_counter()
-        result: Track2Result = pipeline.process(batch)
-        elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        async with pipeline_lock:
+            pipe_start = time.perf_counter()
+            try:
+                result: Track2Result = await asyncio.to_thread(pipeline.process, batch)
+            except GeminiVLMError as primary_err:
+                if fallback_pipeline is not None:
+                    logger.warning(
+                        "[%s] Primary pipeline error (%s). Falling back to secondary pipeline ('gemini-3.5-flash-lite')...",
+                        request_id,
+                        primary_err,
+                    )
+                    result = await asyncio.to_thread(fallback_pipeline.process, batch)
+                else:
+                    raise primary_err
+
+            pipe_ms = round((time.perf_counter() - pipe_start) * 1000, 2)
+
+        total_ms = round((time.perf_counter() - req_start) * 1000, 2)
         logger.info(
-            "Processed FrameBatch (size %d) in %sms: Category=%s, Priority=%s",
+            "[%s] FrameBatch (size %d, frames=%s) completed in %sms (prep=%sms, pipeline=%sms): Category=%s, Priority=%s",
+            request_id,
             len(batch),
-            elapsed_ms,
+            [f.frame_id for f in batch],
+            total_ms,
+            prep_ms,
+            pipe_ms,
             result.decision.category.value,
             result.decision.priority.value,
         )
     except GeminiVLMError as vlm_err:
-        logger.error("Track 2 VLM failure: %s", vlm_err)
+        total_ms = round((time.perf_counter() - req_start) * 1000, 2)
+        logger.error("[%s] Track 2 VLM failure after %sms: %s", request_id, total_ms, vlm_err)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={
@@ -223,7 +266,8 @@ async def process_frames(
             },
         ) from vlm_err
     except Exception as err:
-        logger.exception("Track 2 pipeline processing failure: %s", err)
+        total_ms = round((time.perf_counter() - req_start) * 1000, 2)
+        logger.exception("[%s] Track 2 pipeline failure after %sms: %s", request_id, total_ms, err)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={
