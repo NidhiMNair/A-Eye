@@ -376,17 +376,15 @@ class _SettingsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.surfaceElevated,
+    return Material(
+      color: AppColors.surfaceElevated,
+      shape: RoundedRectangleBorder(
         borderRadius: AppSpacing.roundedLg,
-        border: Border.all(color: AppColors.borderHairline, width: 1),
+        side: const BorderSide(color: AppColors.borderHairline, width: 1),
       ),
-      child: ClipRRect(
-        borderRadius: AppSpacing.roundedLg,
-        child: Column(
-          children: children,
-        ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: children,
       ),
     );
   }
