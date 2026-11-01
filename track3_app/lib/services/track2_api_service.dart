@@ -7,26 +7,52 @@ import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
 import '../models/models.dart';
 
+/// Classification of backend errors for UI status reporting and retry policies.
+enum BackendErrorKind {
+  unreachable,
+  timeout,
+  connectionRefused,
+  vlmError,
+  httpError,
+  emptyFrames,
+  unknown,
+}
+
 /// Base exception for Track 2 API operations.
 class Track2ApiException implements Exception {
   final String message;
   final String? errorCode;
   final int? statusCode;
+  final BackendErrorKind kind;
 
-  const Track2ApiException(this.message, {this.errorCode, this.statusCode});
+  const Track2ApiException(
+    this.message, {
+    this.errorCode,
+    this.statusCode,
+    this.kind = BackendErrorKind.httpError,
+  });
 
   @override
-  String toString() => 'Track2ApiException: $message (code=$errorCode, status=$statusCode)';
+  String toString() => 'Track2ApiException: $message (code=$errorCode, status=$statusCode, kind=$kind)';
 }
 
 /// Thrown when the backend cannot be reached.
 class Track2NetworkException extends Track2ApiException {
-  const Track2NetworkException(super.message, {super.statusCode});
+  const Track2NetworkException(
+    super.message, {
+    super.statusCode,
+    super.kind = BackendErrorKind.unreachable,
+  });
 }
 
 /// Thrown when VLM processing fails on the backend.
 class Track2VlmException extends Track2ApiException {
-  const Track2VlmException(super.message, {super.errorCode, super.statusCode});
+  const Track2VlmException(
+    super.message, {
+    super.errorCode,
+    super.statusCode,
+    super.kind = BackendErrorKind.vlmError,
+  });
 }
 
 /// Health response returned by the Track 2 bridge.
@@ -63,11 +89,39 @@ class Track2ApiService {
     http.Client? client,
   }) : _client = client ?? http.Client();
 
-  /// Query the bridge health status.
+  /// Classify lower-level network errors into structured Track2NetworkException.
+  Track2NetworkException _classifyNetworkException(Object e) {
+    final errStr = e.toString().toLowerCase();
+    if (errStr.contains('connection refused') || errStr.contains('econnrefused')) {
+      return Track2NetworkException(
+        'Connection refused: Track 2 server is not running on ${config.backendBaseUrl}',
+        kind: BackendErrorKind.connectionRefused,
+      );
+    }
+    if (errStr.contains('network is unreachable') ||
+        errStr.contains('failed host lookup') ||
+        errStr.contains('no route to host') ||
+        errStr.contains('socketexception') ||
+        errStr.contains('clientexception')) {
+      return Track2NetworkException(
+        'Server unreachable at ${config.backendBaseUrl}: $e',
+        kind: BackendErrorKind.unreachable,
+      );
+    }
+    return Track2NetworkException(
+      'Network error communicating with Track 2 backend: $e',
+      kind: BackendErrorKind.unreachable,
+    );
+  }
+
+  /// Query the bridge health status using a short connect timeout.
   Future<BridgeHealthStatus> checkHealth({Duration timeout = const Duration(seconds: 4)}) async {
+    final effectiveTimeout = timeout.inMilliseconds == 4000
+        ? Duration(milliseconds: config.connectTimeoutMs)
+        : timeout;
     final uri = Uri.parse('${config.backendBaseUrl}/health');
     try {
-      final response = await _client.get(uri).timeout(timeout);
+      final response = await _client.get(uri).timeout(effectiveTimeout);
       if (response.statusCode >= 200 && response.statusCode < 300) {
         final decoded = jsonDecode(response.body) as Map<String, dynamic>;
         return BridgeHealthStatus.fromJson(decoded);
@@ -75,45 +129,63 @@ class Track2ApiService {
       throw Track2ApiException(
         'Health check returned status ${response.statusCode}',
         statusCode: response.statusCode,
+        kind: BackendErrorKind.httpError,
       );
     } on TimeoutException {
-      throw const Track2NetworkException('Health check timed out');
+      throw Track2NetworkException(
+        'Health check timed out connecting to ${config.backendBaseUrl}',
+        kind: BackendErrorKind.timeout,
+      );
     } catch (e) {
       if (e is Track2ApiException) rethrow;
-      throw Track2NetworkException('Could not connect to Track 2 backend: $e');
+      throw _classifyNetworkException(e);
     }
   }
 
-  /// Reset Track 2 temporal context history for a fresh session.
+  /// Reset Track 2 temporal context history for a fresh session using a short connect timeout.
   Future<void> resetSession({Duration timeout = const Duration(seconds: 5)}) async {
+    final effectiveTimeout = timeout.inMilliseconds == 5000
+        ? Duration(milliseconds: config.connectTimeoutMs)
+        : timeout;
     final uri = Uri.parse('${config.backendBaseUrl}/session/reset');
     try {
-      final response = await _client.post(uri).timeout(timeout);
+      final response = await _client.post(uri).timeout(effectiveTimeout);
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw Track2ApiException(
           'Session reset failed: ${response.statusCode}',
           statusCode: response.statusCode,
+          kind: BackendErrorKind.httpError,
         );
       }
     } on TimeoutException {
-      throw const Track2NetworkException('Session reset request timed out');
+      throw Track2NetworkException(
+        'Session reset request timed out',
+        kind: BackendErrorKind.timeout,
+      );
     } catch (e) {
       if (e is Track2ApiException) rethrow;
-      throw Track2NetworkException('Could not reach backend for session reset: $e');
+      throw _classifyNetworkException(e);
     }
   }
 
-  /// Upload one or more image frames for Track 2 reasoning.
+  /// Upload one or more image frames for Track 2 reasoning using configured response timeout.
   Future<Track2Result> processFrames({
     required List<Uint8List> frameBytesList,
     String? frameId,
     int? timestampMs,
-    Duration timeout = const Duration(seconds: 15),
+    Duration timeout = const Duration(seconds: 25),
   }) async {
     if (frameBytesList.isEmpty) {
-      throw const Track2ApiException('Cannot process an empty list of frames', errorCode: 'EMPTY_FRAMES');
+      throw const Track2ApiException(
+        'Cannot process an empty list of frames',
+        errorCode: 'EMPTY_FRAMES',
+        kind: BackendErrorKind.emptyFrames,
+      );
     }
 
+    final effectiveTimeout = timeout.inMilliseconds == 25000
+        ? Duration(milliseconds: config.responseTimeoutMs)
+        : timeout;
     final uri = Uri.parse('${config.backendBaseUrl}/process-frames');
     final request = http.MultipartRequest('POST', uri);
 
@@ -136,7 +208,7 @@ class Track2ApiService {
     }
 
     try {
-      final streamedResponse = await _client.send(request).timeout(timeout);
+      final streamedResponse = await _client.send(request).timeout(effectiveTimeout);
       final response = await http.Response.fromStream(streamedResponse);
 
       Map<String, dynamic> bodyJson;
@@ -146,6 +218,7 @@ class Track2ApiService {
         throw Track2ApiException(
           'Failed to decode backend response (status ${response.statusCode})',
           statusCode: response.statusCode,
+          kind: BackendErrorKind.httpError,
         );
       }
 
@@ -166,15 +239,27 @@ class Track2ApiService {
       }
 
       if (response.statusCode == 502 || errorCode == 'VLM_ERROR') {
-        throw Track2VlmException(message, errorCode: errorCode, statusCode: response.statusCode);
+        throw Track2VlmException(
+          message,
+          errorCode: errorCode,
+          statusCode: response.statusCode,
+        );
       }
 
-      throw Track2ApiException(message, errorCode: errorCode, statusCode: response.statusCode);
+      throw Track2ApiException(
+        message,
+        errorCode: errorCode,
+        statusCode: response.statusCode,
+        kind: BackendErrorKind.httpError,
+      );
     } on TimeoutException {
-      throw const Track2NetworkException('Frame processing timed out (backend took too long)');
+      throw Track2NetworkException(
+        'Frame processing timed out (backend took longer than ${effectiveTimeout.inSeconds}s)',
+        kind: BackendErrorKind.timeout,
+      );
     } catch (e) {
       if (e is Track2ApiException) rethrow;
-      throw Track2NetworkException('Network error communicating with Track 2 backend: $e');
+      throw _classifyNetworkException(e);
     }
   }
 
