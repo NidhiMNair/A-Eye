@@ -42,17 +42,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
 
     widget.config.updateBackendBaseUrl(_urlController.text);
+    final stopwatch = Stopwatch()..start();
     try {
       final health = await widget.sessionService.apiService.checkHealth();
+      stopwatch.stop();
       if (!mounted) return;
       setState(() {
-        _testResult = 'Success! Connected to Track 2 Bridge (Mode: ${health.vlmMode.toUpperCase()})';
+        _testResult = 'Success! Connected to Track 2 Bridge\n'
+            '• URL: ${widget.config.backendBaseUrl}\n'
+            '• Status: ${health.isHealthy ? "HEALTHY" : "DEGRADED"}\n'
+            '• VLM Mode: ${health.vlmMode.toUpperCase()}\n'
+            '• Round-Trip Time: ${stopwatch.elapsedMilliseconds}ms';
       });
       await widget.sessionService.checkBackendHealth();
     } catch (e) {
+      stopwatch.stop();
       if (!mounted) return;
       setState(() {
-        _testResult = 'Connection Failed: $e';
+        _testResult = 'Connection Failed (${stopwatch.elapsedMilliseconds}ms)\n'
+            '• URL: ${widget.config.backendBaseUrl}\n'
+            '• Error: $e';
       });
     } finally {
       if (mounted) {
