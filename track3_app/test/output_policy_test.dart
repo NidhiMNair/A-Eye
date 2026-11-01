@@ -23,7 +23,6 @@ class MockSpeechService extends SpeechService {
   Future<void> speak(String text, {bool interrupt = false}) async {
     spokenMessages.add(text);
     interruptFlags.add(interrupt);
-    _mockSpeaking = true;
   }
 
   @override
@@ -199,6 +198,33 @@ void main() {
       policy.reset();
       await policy.processResult(guidanceRes);
       expect(mockHaptics.guidanceCount, 1);
+    });
+
+    test('8: Non-escalated alert does not interrupt active speech', () async {
+      final alertRes1 = createTestResult(
+        category: AssistanceCategory.alert,
+        priority: PriorityLevel.high,
+        message: 'Cluttered desk surface ahead',
+      );
+      final alertRes2 = createTestResult(
+        category: AssistanceCategory.alert,
+        priority: PriorityLevel.high,
+        message: 'Cluttered desk surface with keyboard ahead',
+      );
+
+      // Start initial speech
+      await policy.processResult(alertRes1);
+      expect(mockSpeech.spokenMessages.length, 1);
+
+      // Simulate active ongoing speech playback
+      mockSpeech.setSpeaking(true);
+
+      // Subsequent frame arrives while speech is in progress
+      await policy.processResult(alertRes2);
+      expect(mockSpeech.spokenMessages.length, 1, reason: 'Active speech must finish without interruption');
+
+      // Once speech finishes, subsequent new observation can speak
+      mockSpeech.setSpeaking(false);
     });
   });
 }
