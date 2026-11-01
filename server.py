@@ -32,11 +32,14 @@ def add_cors_headers(response):
 
 
 @app.route("/", methods=["GET"])
+@app.route("/health", methods=["GET"])
 def home():
     return jsonify({
-        "status": "running",
-        "service": "A-Eye Track 2 API",
+        "status": "healthy",
+        "service": "a-eye-track2-bridge",
         "mode": backend_mode,
+        "vlm_mode": "live" if backend_mode == "gemini" else "mock",
+        "track2_available": True,
         "real_image_analysis": backend_mode == "gemini",
     })
 
@@ -88,4 +91,4 @@ def image_too_large(_error):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=False)
