@@ -36,7 +36,11 @@ class SessionService extends ChangeNotifier {
   List<OutputEvent> get recentEvents => List.unmodifiable(_recentEvents);
 
   int _lastErrorSpokenTimestamp = 0;
+  String? _lastSpokenErrorMessage;
+  int _consecutiveErrors = 0;
   static const int _errorSpeechCooldownMs = 10000;
+
+  int get consecutiveErrors => _consecutiveErrors;
 
   SessionService({
     required this.config,
@@ -70,14 +74,20 @@ class SessionService extends ChangeNotifier {
       if (_state.status.isActive) {
         final newStatus = isSpeaking
             ? AssistanceStatus.speaking
-            : (frameScheduler.isInferring ? AssistanceStatus.processing : AssistanceStatus.cameraReady);
+            : ((_consecutiveErrors >= config.maxConsecutiveFailures)
+                ? AssistanceStatus.error
+                : (frameScheduler.isInferring ? AssistanceStatus.processing : AssistanceStatus.cameraReady));
         _updateState(_state.copyWith(status: newStatus));
       }
     });
 
     _resultSub = frameScheduler.results.listen((result) async {
+      _consecutiveErrors = 0;
+      _lastSpokenErrorMessage = null;
       _updateState(_state.copyWith(
         latestResult: result,
+        errorMessage: null,
+        isBackendOnline: true,
         status: speechService.isSpeaking ? AssistanceStatus.speaking : AssistanceStatus.cameraReady,
         statusMessage: 'Inference complete: ${result.decision.category.toDisplayString()}',
       ));
@@ -86,9 +96,15 @@ class SessionService extends ChangeNotifier {
     });
 
     _errorSub = frameScheduler.errors.listen((errorMsg) {
+      _consecutiveErrors++;
+      final isRepeatedFailure = _consecutiveErrors >= config.maxConsecutiveFailures;
+      final newStatus = isRepeatedFailure ? AssistanceStatus.error : _state.status;
+
       _updateState(_state.copyWith(
         errorMessage: errorMsg,
+        status: newStatus,
         statusMessage: 'Connection warning: $errorMsg',
+        isBackendOnline: false,
       ));
 
       _speakErrorOnce(errorMsg);
@@ -97,9 +113,9 @@ class SessionService extends ChangeNotifier {
     _statsSub = frameScheduler.stats.listen((stats) {
       final status = _state.status;
       if (status.isActive && !speechService.isSpeaking) {
-        final newStatus = stats.isCurrentlyInferring
-            ? AssistanceStatus.processing
-            : AssistanceStatus.cameraReady;
+        final newStatus = (_consecutiveErrors >= config.maxConsecutiveFailures)
+            ? AssistanceStatus.error
+            : (stats.isCurrentlyInferring ? AssistanceStatus.processing : AssistanceStatus.cameraReady);
         _updateState(_state.copyWith(
           schedulerStats: stats,
           status: newStatus,
@@ -125,6 +141,7 @@ class SessionService extends ChangeNotifier {
   Future<void> checkBackendHealth() async {
     try {
       final health = await apiService.checkHealth();
+      _consecutiveErrors = 0;
       _updateState(_state.copyWith(
         isBackendOnline: health.isHealthy,
         backendMode: health.vlmMode,
@@ -148,22 +165,47 @@ class SessionService extends ChangeNotifier {
     ));
 
     try {
-      // 1. Initialize hardware subsystems
+      // 1. Initial health check: fail fast before initializing camera
+      try {
+        final health = await apiService.checkHealth();
+        if (!health.isHealthy) {
+          throw Track2ApiException('Track 2 bridge reported degraded status');
+        }
+        _updateState(_state.copyWith(
+          isBackendOnline: true,
+          backendMode: health.vlmMode,
+        ));
+      } catch (healthErr) {
+        final failMsg = 'Cannot reach the A-Eye server at ${config.backendBaseUrl}';
+        debugPrint('Session start aborted: $failMsg ($healthErr)');
+        _updateState(_state.copyWith(
+          status: AssistanceStatus.error,
+          statusMessage: failMsg,
+          errorMessage: healthErr.toString(),
+          isBackendOnline: false,
+        ));
+        await speechService.speak('Cannot reach the A-Eye server.', interrupt: true);
+        return;
+      }
+
+      // 2. Initialize hardware subsystems
       await hapticService.checkCapabilities();
       await speechService.initialize();
       await cameraService.initialize();
 
-      // 2. Reset remote Track 2 context for clean session
+      // 3. Reset remote Track 2 context for clean session
       try {
         await apiService.resetSession();
       } catch (e) {
         debugPrint('Warning: remote session reset failed: $e');
       }
 
-      // 3. Reset client-side output policy history
+      // 4. Reset client-side output policy history and counters
       outputPolicy.reset();
+      _consecutiveErrors = 0;
+      _lastSpokenErrorMessage = null;
 
-      // 4. Start frame scheduler sampling loop
+      // 5. Start frame scheduler sampling loop
       frameScheduler.start();
 
       _updateState(_state.copyWith(
@@ -217,8 +259,13 @@ class SessionService extends ChangeNotifier {
 
   void _speakErrorOnce(String errorMsg) {
     final now = DateTime.now().millisecondsSinceEpoch;
+    // Deduplicate: avoid speaking repeatedly when consecutive errors of the same type arrive
+    if (errorMsg == _lastSpokenErrorMessage && (now - _lastErrorSpokenTimestamp < _errorSpeechCooldownMs * 3)) {
+      return;
+    }
     if (now - _lastErrorSpokenTimestamp > _errorSpeechCooldownMs) {
       _lastErrorSpokenTimestamp = now;
+      _lastSpokenErrorMessage = errorMsg;
       speechService.speak('Backend connection warning. Retrying.');
     }
   }
