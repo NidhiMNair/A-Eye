@@ -226,3 +226,37 @@ pytest track2/tests/ track2_bridge/tests/ -v
 >
 > **Privacy Consideration**:
 > Camera frames captured by this application are transmitted over the local network to the Python bridge server. In live mode, frames are transmitted to Google Gemini for scene understanding. Do not point the camera at sensitive or confidential information.
+
+---
+
+## 12. Frontend Architecture & Design System
+
+The Track 3 client features an overhauled frontend following Google's Material 3 Expressive language, tailored specifically for low-vision and visually impaired navigation.
+
+### Design Tokens & Visual Hierarchy
+- **Typography**: Dual offline bundled variable fonts:
+  - `Plus Jakarta Sans`: High-legibility geometric display face for headers, labels, and action states.
+  - `Lexend`: Scientifically designed for reading acuity and low-vision tracking, used for all spoken guidance text.
+- **Palette & Contrast (WCAG 2.2 AA Verified)**:
+  - Obsidian Canvas (`#0B0F17`) and Deep Card (`#131B2A`) with subtle glassmorphic blurs (`sigma: 16`).
+  - Luminous Teal (`#14B8A6`): Primary assistive accent for ready states, active radar, and primary tactile actions.
+  - Reserved Crimson Hazard (`#EF4444`): Exclusively reserved for true spatial hazards and severe alerts. Never used for generic "Stop" actions.
+  - High Contrast Mode: Switchable high-contrast theme (`#000000` pitch surface, `#FACC15` cyber amber border/text) compliant with 7:1+ contrast requirements.
+- **Motion System**: Material 3 Expressive curves (`cubic-bezier(0.16, 1, 0.3, 1)`) with subtle breathing auric pulses (2200 ms) and automatic reduced-motion fallbacks honoring `MediaQuery.disableAnimations`.
+
+### A-Eye Mode (Dark Screen Navigation)
+A dedicated voice-first navigation mode that conceals the camera viewfinder for complete privacy and maximum OLED power savings:
+- **Pure OLED Pitch Surface**: `#000000` canvas turns off OLED subpixels.
+- **Hardware Screen Curtain Channel**: Invokes `com.aeye.track3_app/screen_curtain` native Kotlin platform channel:
+  - Sets `window.attributes.screenBrightness = 0.01` (lowest possible hardware backlight level).
+  - Enables `FLAG_KEEP_SCREEN_ON` and sticky immersive mode.
+  - Hooks `AppLifecycleState.paused` / native `onPause` to automatically restore device system brightness whenever the user navigates away or locks the device.
+- **Exit Gesture & Audio Confirmation**: 1.8-second deliberate hold-to-exit with circular animated feedback ring and TalkBack voice prompt ("A-Eye Mode active. Hold screen to exit").
+
+> [!NOTE]
+> **Android Hardware Display Limitation**: Standard user-space Android apps (without root or Device Owner privileged permissions) cannot completely turn off the physical display controller while keeping camera capture alive, as Android's OS layer suspends camera feeds when the display powers down (`Display.STATE_OFF`). A-Eye Mode achieves maximum possible battery preservation by rendering 100% black OLED pixels and lowering backlight level to the hardware floor (0.01).
+
+### Developer Telemetry HUD
+- Accessible via Settings toggle or top-bar analytics icon.
+- Displays live round-trip latency, frame capture FPS, dropped frame counters, connected bridge IP, and expandable raw Track 2 perception JSON without cluttering the primary user interface.
+

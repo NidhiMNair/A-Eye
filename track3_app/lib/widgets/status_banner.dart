@@ -87,8 +87,8 @@ class StatusBanner extends StatelessWidget {
                   ),
                   Text(
                     state.statusMessage,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
+                    maxLines: 5,
+                    softWrap: true,
                     style: const TextStyle(fontSize: 13),
                   ),
                 ],

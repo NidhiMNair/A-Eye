@@ -27,11 +27,19 @@ VlmMode = Literal["mock", "live"]
 
 def get_vlm_mode() -> VlmMode:
     """
-    Get configured VLM mode from A_EYE_VLM_MODE environment variable.
-    Defaults to 'mock' for safe offline development.
+    Get configured VLM mode.
+    If A_EYE_VLM_MODE is set, respects it.
+    Otherwise, if GEMINI_API_KEY is set and non-empty, defaults to 'live'.
     """
-    mode = os.environ.get("A_EYE_VLM_MODE", "mock").strip().lower()
-    if mode in ("live", "gemini"):
+    mode = os.environ.get("A_EYE_VLM_MODE")
+    if mode:
+        clean = mode.strip().lower()
+        if clean in ("live", "gemini"):
+            return "live"
+        return "mock"
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if api_key and api_key.strip():
         return "live"
     return "mock"
 

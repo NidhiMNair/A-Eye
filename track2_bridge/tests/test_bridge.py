@@ -11,8 +11,18 @@ import io
 import pytest
 from fastapi.testclient import TestClient
 
-from track2.vlm import GeminiAPIKeyError
+from track2.pipeline import Track2Pipeline
+from track2.vlm import GeminiAPIKeyError, MockVLM
+import track2_bridge.server as srv
 from track2_bridge.server import app, create_pipeline
+
+
+@pytest.fixture(autouse=True)
+def setup_mock_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure bridge tests run 100% offline against MockVLM regardless of environment."""
+    mock_pipeline = Track2Pipeline(vlm=MockVLM())
+    monkeypatch.setattr(srv, "pipeline", mock_pipeline)
+    monkeypatch.setattr(srv, "active_vlm_mode", "mock")
 
 
 @pytest.fixture
