@@ -40,6 +40,7 @@ class SpeechService {
         await _ttsInstance.setLanguage('en-US');
       }
 
+      await _ttsInstance.awaitSpeakCompletion(true);
       await _ttsInstance.setSpeechRate(config.ttsSpeechRate);
       await _ttsInstance.setVolume(1.0);
       await _ttsInstance.setPitch(1.0);
@@ -90,13 +91,27 @@ class SpeechService {
     }
 
     try {
-      if (interrupt || _isSpeaking) {
+      // If speech is currently ongoing and interruption is NOT requested, let current sentence finish
+      if (_isSpeaking && !interrupt) {
+        return;
+      }
+
+      if (interrupt && _isSpeaking) {
         await _ttsInstance.stop();
+      }
+
+      _isSpeaking = true;
+      if (!_speakingStateController.isClosed) {
+        _speakingStateController.add(true);
       }
 
       await _ttsInstance.setSpeechRate(config.ttsSpeechRate);
       await _ttsInstance.speak(cleanText);
     } catch (e) {
+      _isSpeaking = false;
+      if (!_speakingStateController.isClosed) {
+        _speakingStateController.add(false);
+      }
       debugPrint('SpeechService: speak error: $e');
     }
   }
