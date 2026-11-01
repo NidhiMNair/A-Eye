@@ -13,6 +13,10 @@ class AppConfig extends ChangeNotifier {
     bool? verboseLogging,
     String? ttsLanguage,
     double? ttsSpeechRate,
+    int? connectTimeoutMs,
+    int? responseTimeoutMs,
+    int? maxConsecutiveFailures,
+    int? maxBackoffMs,
   })  : _backendBaseUrl = backendBaseUrl ?? defaultBackendUrl,
         _samplingIntervalMs = samplingIntervalMs ?? 750,
         _jpegQuality = jpegQuality ?? 75,
@@ -22,7 +26,11 @@ class AppConfig extends ChangeNotifier {
         _hapticsEnabled = hapticsEnabled ?? true,
         _verboseLogging = verboseLogging ?? kDebugMode,
         _ttsLanguage = ttsLanguage ?? 'en-IN',
-        _ttsSpeechRate = ttsSpeechRate ?? 0.5;
+        _ttsSpeechRate = ttsSpeechRate ?? 0.5,
+        _connectTimeoutMs = connectTimeoutMs ?? 4000,
+        _responseTimeoutMs = responseTimeoutMs ?? 25000,
+        _maxConsecutiveFailures = maxConsecutiveFailures ?? 3,
+        _maxBackoffMs = maxBackoffMs ?? 8000;
 
   /// Default backend URL: Android Emulator uses 10.0.2.2, desktop/web uses 127.0.0.1
   static String get defaultBackendUrl {
@@ -45,6 +53,10 @@ class AppConfig extends ChangeNotifier {
   final bool _verboseLogging;
   String _ttsLanguage;
   double _ttsSpeechRate;
+  final int _connectTimeoutMs;
+  int _responseTimeoutMs;
+  final int _maxConsecutiveFailures;
+  final int _maxBackoffMs;
 
   String get backendBaseUrl => _backendBaseUrl;
   int get samplingIntervalMs => _samplingIntervalMs;
@@ -56,6 +68,10 @@ class AppConfig extends ChangeNotifier {
   bool get verboseLogging => _verboseLogging;
   String get ttsLanguage => _ttsLanguage;
   double get ttsSpeechRate => _ttsSpeechRate;
+  int get connectTimeoutMs => _connectTimeoutMs;
+  int get responseTimeoutMs => _responseTimeoutMs;
+  int get maxConsecutiveFailures => _maxConsecutiveFailures;
+  int get maxBackoffMs => _maxBackoffMs;
 
   void updateBackendBaseUrl(String newUrl) {
     var trimmed = newUrl.trim();
@@ -71,6 +87,13 @@ class AppConfig extends ChangeNotifier {
   void updateSamplingInterval(int intervalMs) {
     if (intervalMs >= 300 && intervalMs <= 5000 && _samplingIntervalMs != intervalMs) {
       _samplingIntervalMs = intervalMs;
+      notifyListeners();
+    }
+  }
+
+  void updateResponseTimeout(int timeoutMs) {
+    if (timeoutMs >= 5000 && timeoutMs <= 60000 && _responseTimeoutMs != timeoutMs) {
+      _responseTimeoutMs = timeoutMs;
       notifyListeners();
     }
   }
