@@ -59,7 +59,10 @@ class AssistanceOutputPolicy {
     _lastPriority = PriorityLevel.low;
     _lastSpokenTimestamp = 0;
     _lastSpokenHazards = {};
+    _clearFramesCount = 0;
   }
+
+  int _clearFramesCount = 0;
 
   /// Process an incoming Track2Result through the assistance output policy.
   Future<void> processResult(Track2Result result) async {
@@ -68,6 +71,12 @@ class AssistanceOutputPolicy {
     final priority = decision.priority;
 
     if (category == AssistanceCategory.none) {
+      _clearFramesCount++;
+      if (_clearFramesCount >= 2) {
+        // Scene cleared: allow obstacle to be announced again if camera turns back
+        _lastSpokenText = '';
+        _lastSpokenHazards = {};
+      }
       _recordEvent(
         text: '',
         category: category,
@@ -78,61 +87,79 @@ class AssistanceOutputPolicy {
       );
       return;
     }
+    _clearFramesCount = 0;
 
     final candidateSpeechText = _formatSpeechText(result);
     final now = DateTime.now().millisecondsSinceEpoch;
     final elapsedSinceLastSpeech = now - _lastSpokenTimestamp;
 
     // Check for priority escalation (e.g. from MEDIUM/LOW to HIGH)
-    final isPriorityEscalated = priority.rank > _lastPriority.rank;
+    final isPriorityEscalated = _lastSpokenText.isNotEmpty && priority.rank > _lastPriority.rank;
+
+    // If speech is actively playing, never interrupt it unless priority strictly escalated
+    if (speechService.isSpeaking && !isPriorityEscalated) {
+      _recordEvent(
+        text: candidateSpeechText,
+        category: category,
+        priority: priority,
+        wasSpoken: false,
+        wasInterrupted: false,
+        reason: 'Active speech in progress: allowing current sentence to finish',
+      );
+      return;
+    }
+
+    // Check message material change using substantive word similarity
+    final isMaterialChange = _isMaterialChange(candidateSpeechText, _lastSpokenText);
 
     // Check for newly appeared hazards
     final currentHazards = result.perception.hazards.toSet();
-    final hasNewHazard = currentHazards.difference(_lastSpokenHazards).isNotEmpty;
-
-    // Check message material change
-    final isMaterialChange = candidateSpeechText.toLowerCase() != _lastSpokenText.toLowerCase();
+    final hasNewHazard = isMaterialChange && currentHazards.difference(_lastSpokenHazards).isNotEmpty;
 
     // Check cooldown based on category
     final cooldownMs = _getCooldownMs(category);
     final isCooldownExpired = elapsedSinceLastSpeech >= cooldownMs;
 
     // Suppression decision logic:
-    // Speak if:
-    // 1. Priority escalated (outranks previous state immediately)
-    // 2. OR new hazard detected
-    // 3. OR (message changed AND cooldown expired)
-    // 4. OR (same message BUT cooldown expired for HIGH ALERT)
     bool shouldSpeak = false;
     bool shouldInterrupt = false;
     String suppressionReason = '';
 
     if (category == AssistanceCategory.alert) {
-      if (isPriorityEscalated || hasNewHazard) {
+      if (isPriorityEscalated) {
         shouldSpeak = true;
         shouldInterrupt = true;
+      } else if (hasNewHazard && isMaterialChange) {
+        shouldSpeak = true;
+        shouldInterrupt = false;
       } else if (isMaterialChange && isCooldownExpired) {
         shouldSpeak = true;
-        shouldInterrupt = speechService.isSpeaking && _lastPriority != PriorityLevel.high;
+        shouldInterrupt = false;
       } else if (!isMaterialChange && isCooldownExpired) {
         // Repeated high alert after cooldown to remind user of persistent danger
         shouldSpeak = true;
+        shouldInterrupt = false;
       } else {
-        suppressionReason = 'Alert in cooldown (${elapsedSinceLastSpeech}ms < ${cooldownMs}ms)';
+        suppressionReason = isMaterialChange
+            ? 'Alert in cooldown (${elapsedSinceLastSpeech}ms < ${cooldownMs}ms)'
+            : 'Duplicate alert suppressed';
       }
     } else if (category == AssistanceCategory.guidance) {
       if (isPriorityEscalated) {
         shouldSpeak = true;
+        shouldInterrupt = true;
       } else if (isMaterialChange && isCooldownExpired) {
         shouldSpeak = true;
+        shouldInterrupt = false;
       } else {
         suppressionReason = isMaterialChange
             ? 'Guidance in cooldown (${elapsedSinceLastSpeech}ms < ${cooldownMs}ms)'
             : 'Duplicate guidance message';
       }
     } else if (category == AssistanceCategory.info) {
-      if (isMaterialChange && isCooldownExpired && !speechService.isSpeaking) {
+      if (isMaterialChange && isCooldownExpired) {
         shouldSpeak = true;
+        shouldInterrupt = false;
       } else {
         suppressionReason = 'Info suppressed to avoid chatter';
       }
@@ -176,6 +203,52 @@ class AssistanceOutputPolicy {
         reason: suppressionReason,
       );
     }
+  }
+
+  /// Check if candidate message represents a substantially different observation than the previous one.
+  bool _isMaterialChange(String candidate, String last) {
+    if (last.isEmpty) return true;
+    final cLower = candidate.toLowerCase().trim();
+    final lLower = last.toLowerCase().trim();
+    if (cLower == lLower) return false;
+
+    // Compare meaningful words (>2 chars, excluding common boilerplate words)
+    const boilerplate = {
+      'alert',
+      'caution',
+      'obstacle',
+      'hazard',
+      'detected',
+      'in',
+      'path',
+      'ahead',
+      'with',
+      'and',
+      'the',
+      'small',
+      'door'
+    };
+    final cWords = cLower
+        .replaceAll(RegExp(r'[^a-z0-9 ]'), '')
+        .split(' ')
+        .where((w) => w.length > 2 && !boilerplate.contains(w))
+        .toSet();
+    final lWords = lLower
+        .replaceAll(RegExp(r'[^a-z0-9 ]'), '')
+        .split(' ')
+        .where((w) => w.length > 2 && !boilerplate.contains(w))
+        .toSet();
+
+    if (cWords.isEmpty || lWords.isEmpty) {
+      return cLower != lLower;
+    }
+
+    final overlap = cWords.intersection(lWords).length;
+    final union = cWords.union(lWords).length;
+    final similarity = overlap / union;
+
+    // If similarity >= 0.5, treat as essentially the same observation/scene
+    return similarity < 0.5;
   }
 
   /// Construct speakable natural text strictly using Track 2 decision and data.
